@@ -40,4 +40,4 @@ volumes:
 
 networks:
   isolated:
-    internal: true
+    internal: false
