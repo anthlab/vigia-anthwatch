@@ -1,0 +1,6 @@
+<!-- Añadir DENTRO de ossec_config en el agente de anthwatch-server.
+     Ajustar la ruta a la ubicación REAL del proyecto. -->
+<localfile>
+  <log_format>json</log_format>
+  <location>/opt/vigia/logs/events.jsonl</location>
+</localfile>

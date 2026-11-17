@@ -1,0 +1,43 @@
+services:
+  web:
+    build: .
+    ports:
+      - "${BIND_IP:-127.0.0.1}:8000:8000"
+    environment:
+      SESSION_SECRET: ${SESSION_SECRET:?Genera SESSION_SECRET en .env}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      REGISTRATION_OPEN: ${REGISTRATION_OPEN:-true}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      - vigia_data:/app/data
+      - ./logs:/app/logs
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 100
+    mem_limit: 512m
+    cpus: 1.0
+    init: true
+    networks:
+      - isolated
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  vigia_data:
+
+networks:
+  isolated:
+    internal: true

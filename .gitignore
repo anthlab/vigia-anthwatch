@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+data/
+logs/
+*.db
+*.db-*
+.coverage
+
+backups/
+tls/
+*.key
+*.pem
+*.crt
+.venv-audit/

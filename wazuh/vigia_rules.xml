@@ -1,0 +1,58 @@
+<!-- Instalar como archivo independiente en el manager, sin sustituir reglas anteriores.
+     Verificar antes que los IDs 110500-110511 estén libres. -->
+<group name="vigia,">
+  <rule id="110500" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="app">^vigia$</field>
+    <description>Vigia: evento de laboratorio $(event)</description>
+  </rule>
+  <rule id="110501" level="5">
+    <if_sid>110500</if_sid>
+    <field name="event">^login_failed$</field>
+    <description>Vigia: inicio de sesion fallido</description>
+  </rule>
+  <rule id="110502" level="6">
+    <if_sid>110500</if_sid>
+    <field name="event">^access_denied$</field>
+    <description>Vigia: acceso a recurso no disponible o ajeno</description>
+  </rule>
+  <rule id="110503" level="3">
+    <if_sid>110500</if_sid>
+    <field name="event">^validation_failed$</field>
+    <description>Vigia: entrada invalida (no confirma un ataque)</description>
+  </rule>
+  <rule id="110504" level="3">
+    <if_sid>110500</if_sid>
+    <field name="event">^login_ok$</field>
+    <description>Vigia: inicio de sesion correcto</description>
+  </rule>
+  <rule id="110505" level="5">
+    <if_sid>110500</if_sid>
+    <field name="event">^csrf_denied$</field>
+    <description>Vigia: comprobacion CSRF rechazada</description>
+  </rule>
+  <rule id="110506" level="5">
+    <if_sid>110500</if_sid><field name="event">^rate_limited$</field>
+    <description>Vigia: limite de peticiones alcanzado; revisar contexto</description>
+  </rule>
+  <rule id="110507" level="5">
+    <if_sid>110500</if_sid><field name="event">^origin_denied$</field>
+    <description>Vigia: origen de peticion rechazado</description>
+  </rule>
+  <rule id="110508" level="4">
+    <if_sid>110500</if_sid><field name="event">^password_changed$</field>
+    <description>Vigia: contrasena cambiada y sesiones revocadas</description>
+  </rule>
+  <rule id="110509" level="5">
+    <if_sid>110500</if_sid><field name="event">^password_change_denied$</field>
+    <description>Vigia: cambio de contrasena rechazado</description>
+  </rule>
+  <rule id="110510" level="3">
+    <if_sid>110500</if_sid><field name="event">^sessions_revoked$</field>
+    <description>Vigia: sesiones revocadas por el usuario</description>
+  </rule>
+  <rule id="110511" level="7">
+    <if_sid>110500</if_sid><field name="event">^internal_error$</field>
+    <description>Vigia: error interno de aplicacion; no confirma un ataque</description>
+  </rule>
+</group>

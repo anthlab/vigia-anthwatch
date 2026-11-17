@@ -1,0 +1,30 @@
+/tmp/vigia-runtime-v3/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+test_closed_registration_and_quotas (test_app.VigiaTests.test_closed_registration_and_quotas) ... ok
+test_cross_user_isolation (test_app.VigiaTests.test_cross_user_isolation) ... ok
+test_csrf_and_unauthenticated (test_app.VigiaTests.test_csrf_and_unauthenticated) ... ok
+test_demo_idempotent_and_owned (test_app.VigiaTests.test_demo_idempotent_and_owned) ... ok
+test_error_response_does_not_leak (test_app.VigiaTests.test_error_response_does_not_leak) ... ok
+test_host_origin_and_body_size (test_app.VigiaTests.test_host_origin_and_body_size) ... ok
+test_idle_and_absolute_expiry (test_app.VigiaTests.test_idle_and_absolute_expiry) ... ok
+test_invalid_inputs (test_app.VigiaTests.test_invalid_inputs) ... ok
+test_legacy_hash_upgrades_without_data_loss (test_app.VigiaTests.test_legacy_hash_upgrades_without_data_loss) ... ok
+test_logs_have_no_secrets (test_app.VigiaTests.test_logs_have_no_secrets) ... ok
+test_new_login_and_logout_all_revoke (test_app.VigiaTests.test_new_login_and_logout_all_revoke) ... ok
+test_password_change_revokes_and_checks_current (test_app.VigiaTests.test_password_change_revokes_and_checks_current) ... ok
+test_password_policy_and_registration_privacy (test_app.VigiaTests.test_password_policy_and_registration_privacy) ... ok
+test_passwords_cookies_and_headers (test_app.VigiaTests.test_passwords_cookies_and_headers) ... ok
+test_persistence_on_restart (test_app.VigiaTests.test_persistence_on_restart) ... ok
+test_rate_limit_persists_and_expires (test_app.VigiaTests.test_rate_limit_persists_and_expires) ... ok
+test_registration_has_demo (test_app.VigiaTests.test_registration_has_demo) ... ok
+test_secure_cookie_profile (test_app.VigiaTests.test_secure_cookie_profile) ... ok
+test_text_and_sql_are_data (test_app.VigiaTests.test_text_and_sql_are_data) ... ok
+test_workflow_and_session_revocation (test_app.VigiaTests.test_workflow_and_session_revocation) ... ok
+test_backup_integrity_no_sessions_no_overwrite (test_operations.OperationsTests.test_backup_integrity_no_sessions_no_overwrite) ... ok
+test_launcher_creates_persistent_private_env (test_operations.OperationsTests.test_launcher_creates_persistent_private_env) ... ok
+test_stream_body_limit_and_timeout (test_operations.OperationsTests.test_stream_body_limit_and_timeout) ... ok
+
+----------------------------------------------------------------------
+Ran 23 tests in 15.969s
+
+OK

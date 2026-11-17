@@ -1,0 +1,11 @@
+# Optativo: requiere tls/server.crt y tls/server.key con SAN localhost,127.0.0.1.
+# El cliente debe confiar en el emisor; no omitas la validación del certificado.
+services:
+  web:
+    environment:
+      COOKIE_SECURE: "true"
+    volumes:
+      - ./tls:/app/tls:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers", "--no-server-header", "--no-access-log", "--limit-concurrency", "32", "--timeout-keep-alive", "5", "--ssl-certfile", "/app/tls/server.crt", "--ssl-keyfile", "/app/tls/server.key"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; urllib.request.urlopen('https://localhost:8000/health',context=ssl.create_default_context(cafile='/app/tls/server.crt'),timeout=3)"]
