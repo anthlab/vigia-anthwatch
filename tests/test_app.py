@@ -25,7 +25,7 @@ class VigiaTests(unittest.TestCase):
                 con.execute('DELETE FROM '+table)
         self.h={'X-Vigia-Request':'1'}
     def account(self, email='ana@lab.test'):
-        r=self.client.post('/api/register',json={'name':'Ana','email':email,'password':'Una-clave-ficticia-123'},headers=self.h)
+        r=self.client.post('/api/register',json={'name':'Ana' if email=='ana@lab.test' else email.split('@')[0],'email':email,'password':'Una-clave-ficticia-123'},headers=self.h)
         self.assertEqual(r.status_code,201)
         r=self.client.post('/api/login',json={'email':email,'password':'Una-clave-ficticia-123'},headers=self.h)
         self.assertEqual(r.status_code,200)
@@ -109,25 +109,26 @@ class VigiaTests(unittest.TestCase):
     def test_demo_idempotent_and_owned(self):
         self.account()
         self.domain()  # dominio preexistente: se reutiliza sin borrarlo
-        r=self.client.post('/api/demo',json={},headers=self.h)
+        r=self.client.post('/api/demo',json={'case_ids':[1,2,3,4,5,6]},headers=self.h)
         self.assertEqual(r.json()['added'],6)
         self.assertEqual(len(self.client.get('/api/domains').json()),3)
         cases=self.client.get('/api/incidents').json()
         self.assertEqual(len(cases),6)
         self.assertEqual({c['status'] for c in cases},{'pendiente','investigacion','resuelta'})
         self.assertTrue(all(c['title'].startswith('[DEMO]') for c in cases))
-        self.assertEqual(self.client.post('/api/demo',json={},headers=self.h).json()['added'],0)
+        self.assertEqual(self.client.post('/api/demo',json={'case_ids':[1,2,3,4,5,6]},headers=self.h).json()['added'],0)
         self.assertEqual(len(self.client.get('/api/incidents').json()),6)
         self.client.cookies.clear()
         self.account('otra@lab.test')
         self.assertEqual(self.client.get('/api/incidents/'+str(cases[0]['id'])).status_code,404)
 
-    def test_registration_has_demo(self):
+    def test_registration_starts_empty(self):
         r=self.client.post('/api/register',json={'name':'Demo','email':'demo@lab.test','password':'Clave-ficticia-123'},headers=self.h)
         self.assertEqual(r.status_code,201)
         with db() as con:
-            self.assertEqual(con.execute('SELECT count(*) FROM incidents').fetchone()[0],6)
-            self.assertEqual(con.execute('SELECT count(*) FROM domains').fetchone()[0],3)
+            self.assertEqual(con.execute('SELECT count(*) FROM incidents').fetchone()[0],0)
+            self.assertEqual(con.execute('SELECT count(*) FROM domains').fetchone()[0],0)
+            self.assertEqual(con.execute('SELECT count(*) FROM demo_loaded').fetchone()[0],0)
 
     def test_rate_limit_persists_and_expires(self):
         from unittest.mock import patch
@@ -198,14 +199,14 @@ class VigiaTests(unittest.TestCase):
         with db() as con: self.assertTrue(con.execute('SELECT password FROM users').fetchone()[0].startswith('scrypt$131072$'))
         self.assertEqual(self.client.get('/api/domains').json()[0]['id'],d)
 
-    def test_password_policy_and_registration_privacy(self):
+    def test_password_policy_and_duplicate_email(self):
         p={'name':'Ana','email':'ana@lab.test','password':'Corta-1234567'}
         self.assertEqual(self.client.post('/api/register',json=p,headers=self.h).status_code,422)
         p['password']='Una-clave-ficticia-123'
         a=self.client.post('/api/register',json=p,headers=self.h)
         b=self.client.post('/api/register',json=p,headers=self.h)
-        self.assertEqual(a.status_code,b.status_code)
-        self.assertEqual(a.json(),b.json())
+        self.assertEqual(a.status_code,201)
+        self.assertEqual(b.status_code,409)
         with db() as con:self.assertEqual(con.execute('SELECT count(*) FROM users').fetchone()[0],1)
 
     def test_closed_registration_and_quotas(self):
@@ -219,7 +220,7 @@ class VigiaTests(unittest.TestCase):
             self.assertEqual(self.client.post('/api/incidents',json={'domain_id':d,'title':'Nuevo','description':'Otra incidencia','category':'otro','priority':'media'},headers=self.h).status_code,409)
             self.assertEqual(self.client.post(f'/api/incidents/{i}/notes',json={'body':'Primera'},headers=self.h).status_code,201)
             self.assertEqual(self.client.post(f'/api/incidents/{i}/notes',json={'body':'Segunda'},headers=self.h).status_code,409)
-            self.assertEqual(self.client.post('/api/demo',json={},headers=self.h).status_code,409)
+            self.assertEqual(self.client.post('/api/demo',json={'case_ids':[1,2,3,4,5,6]},headers=self.h).status_code,409)
         self.assertEqual(len(self.client.get('/api/incidents').json()),1)
 
     def test_secure_cookie_profile(self):
@@ -244,5 +245,205 @@ class VigiaTests(unittest.TestCase):
             self.assertNotIn('FAKE_SECRET',r.text)
             self.assertIn('Content-Security-Policy',r.headers)
             c.close()
+
+    def test_attribution_cannot_be_forged_and_updates(self):
+        self.account(); d=self.domain(); i=self.incident(d)
+        row=self.client.get(f'/api/incidents/{i}').json()
+        self.assertEqual(row['created_by_name'],'Ana')
+        self.assertEqual(row['creation_source'],'user')
+        self.assertIsNone(row['updated_by'])
+        self.assertEqual(self.client.patch(f'/api/incidents/{i}',json={'status':'resuelta','updated_by':999},headers=self.h).status_code,422)
+        self.assertEqual(self.client.patch(f'/api/incidents/{i}',json={'status':'resuelta'},headers=self.h).status_code,200)
+        row=self.client.get(f'/api/incidents/{i}').json()
+        self.assertEqual(row['updated_by'],row['created_by'])
+        self.assertIsNotNone(row['updated_at'])
+        self.client.post(f'/api/incidents/{i}/notes',json={'body':'Una nota atribuida'},headers=self.h)
+        row=self.client.get(f'/api/incidents/{i}').json()
+        self.assertEqual(row['notes'][0]['author_id'],row['created_by'])
+        self.assertEqual(row['notes'][0]['author_name'],'Ana')
+        self.assertEqual(self.client.get('/api/incidents').json()[0]['updated_by_name'],'Ana')
+
+    def test_demo_attribution_is_system(self):
+        self.account()
+        self.client.post('/api/demo',json={'case_ids':[1,2,3,4,5,6]},headers=self.h)
+        row=self.client.get('/api/incidents').json()[0]
+        self.assertEqual(row['creation_source'],'demo')
+        self.assertIsNone(row['created_by'])
+        note=self.client.get('/api/incidents/'+str(row['id'])).json()['notes'][0]
+        self.assertEqual(note['source'],'demo')
+
+    def test_attribution_migration_preserves_unknown_history(self):
+        import sqlite3
+        from app.main import migrate_attribution
+        with sqlite3.connect(':memory:') as con:
+            con.row_factory=sqlite3.Row
+            con.executescript("CREATE TABLE users(id INTEGER PRIMARY KEY); CREATE TABLE incidents(id INTEGER PRIMARY KEY,title TEXT); CREATE TABLE notes(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO incidents VALUES(1,'Histórico'); INSERT INTO notes VALUES(1,'Nota antigua');")
+            migrate_attribution(con)
+            migrate_attribution(con)
+            row=con.execute('SELECT * FROM incidents').fetchone()
+            self.assertEqual(row['title'],'Histórico')
+            self.assertEqual(row['creation_source'],'legacy')
+            self.assertIsNone(row['created_by'])
+            self.assertIsNone(row['updated_by'])
+            self.assertIsNone(con.execute('SELECT author_id FROM notes').fetchone()[0])
+
+    def test_unique_username_normalization(self):
+        self.account()
+        for name in ['ANA',' Ana ','Ａｎａ']:
+            r=self.client.post('/api/register',json={'name':name,'email':'other@lab.test','password':'Una-clave-ficticia-123'},headers=self.h)
+            self.assertEqual(r.status_code,409)
+        with db() as con: self.assertEqual(con.execute('SELECT count(*) FROM users').fetchone()[0],1)
+
+    def test_welcome_saved_per_account_and_restart(self):
+        self.account()
+        self.assertFalse(self.client.get('/api/me').json()['welcome_seen'])
+        self.assertEqual(self.client.post('/api/welcome-seen',json={},headers={'X-Vigia-Request':'1'}).status_code,403)
+        self.assertEqual(self.client.post('/api/welcome-seen',json={},headers=self.h).status_code,200)
+        with TestClient(app) as second:
+            second.cookies.update(self.client.cookies)
+            self.assertTrue(second.get('/api/me').json()['welcome_seen'])
+        self.account('bea@lab.test')
+        self.assertFalse(self.client.get('/api/me').json()['welcome_seen'])
+
+    def test_admin_bootstrap_persistent_and_private(self):
+        from unittest.mock import patch
+        from app.main import bootstrap_admin, verify_password
+        with db() as con, tempfile.TemporaryDirectory() as tmp, patch('app.main.DATA',Path(tmp)):
+            con.execute("DELETE FROM app_settings WHERE key='admin_initialized'")
+            bootstrap_admin(con)
+            row=con.execute("SELECT * FROM users WHERE name_key='admin'").fetchone()
+            secretfile=Path(tmp)/'admin-inicial.txt'
+            text=secretfile.read_text()
+            password=text.split('Contraseña: ')[1].splitlines()[0]
+            self.assertTrue(verify_password(password,row['password'])[0])
+            self.assertEqual(secretfile.stat().st_mode&0o777,0o600)
+            self.assertEqual(row['email'],'admin@vigia.test')
+            self.assertEqual(row['role'],'admin')
+            self.assertEqual(con.execute('SELECT count(*) FROM domains WHERE user_id=?',(row['id'],)).fetchone()[0],0)
+            self.assertEqual(con.execute('SELECT count(*) FROM incidents WHERE user_id=?',(row['id'],)).fetchone()[0],0)
+            bootstrap_admin(con)
+            self.assertEqual(secretfile.read_text(),text)
+            self.assertEqual(con.execute("SELECT count(*) FROM users WHERE name_key='admin'").fetchone()[0],1)
+
+    def test_legacy_duplicate_names_preserve_data(self):
+        import sqlite3
+        from app.main import migrate_accounts
+        with sqlite3.connect(':memory:') as con:
+            con.row_factory=sqlite3.Row
+            con.executescript("CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT); INSERT INTO users VALUES(1,'Ana'),(2,'ANA');")
+            migrate_accounts(con)
+            names=[r['name'] for r in con.execute('SELECT name FROM users ORDER BY id')]
+            self.assertEqual(names,['Ana','ANA #2'])
+            migrate_accounts(con)
+            self.assertEqual([r['name'] for r in con.execute('SELECT name FROM users ORDER BY id')],names)
+
+    def test_admin_permissions_and_global_read(self):
+        self.account(); own=self.incident(self.domain())
+        for path in ['/api/admin/users','/api/admin/summary','/api/admin/incidents','/api/admin/incidents/'+str(own)]:
+            self.assertEqual(self.client.get(path).status_code,403)
+        self.assertEqual(self.client.patch('/api/admin/users/999',json={'active':False},headers=self.h).status_code,403)
+        self.assertEqual(self.client.post('/api/admin/users/999/revoke',json={},headers=self.h).status_code,403)
+        with db() as con: con.execute("UPDATE users SET role='admin' WHERE email='ana@lab.test'")
+        cookies=dict(self.client.cookies); headers=dict(self.h)
+        self.account('bea@lab.test'); other=self.incident(self.domain())
+        self.client.cookies.clear();self.client.cookies.update(cookies);self.h=headers
+        self.assertEqual(self.client.get('/api/me').json()['role'],'admin')
+        summary=self.client.get('/api/admin/summary').json()
+        self.assertEqual(summary['users'],2)
+        self.assertEqual(summary['incidents'],2)
+        self.assertEqual(len(self.client.get('/api/incidents').json()),1)
+        self.assertEqual(self.client.get('/api/incidents/'+str(other)).status_code,404)
+        result=self.client.get('/api/admin/incidents/'+str(other)).json()
+        self.assertEqual(result['owner_name'],'bea')
+        self.assertNotIn('password',self.client.get('/api/admin/users').text)
+        self.assertEqual(len(self.client.get('/api/admin/incidents').json()['items']),2)
+        self.assertEqual(self.client.get('/api/admin/incidents?offset=-1').status_code,422)
+        self.assertEqual(self.client.get('/api/admin/incidents?offset=50').json()['items'],[])
+
+    def test_admin_disable_reenable_and_revoke(self):
+        self.account()
+        with db() as con:
+            con.execute("UPDATE users SET role='admin' WHERE email='ana@lab.test'")
+            admin=con.execute("SELECT id FROM users WHERE email='ana@lab.test'").fetchone()[0]
+        cookies=dict(self.client.cookies); headers=dict(self.h)
+        self.account('bea@lab.test'); domain=self.domain()
+        victim_cookies=dict(self.client.cookies)
+        with db() as con: victim=con.execute("SELECT id FROM users WHERE email='bea@lab.test'").fetchone()[0]
+        self.client.cookies.clear();self.client.cookies.update(cookies);self.h=headers
+        path='/api/admin/users/'+str(victim)
+        self.assertEqual(self.client.patch(path,json={'active':False},headers={'X-Vigia-Request':'1'}).status_code,403)
+        self.assertEqual(self.client.patch('/api/admin/users/'+str(admin),json={'active':False},headers=self.h).status_code,409)
+        self.assertEqual(self.client.patch(path,json={'active':False},headers=self.h).status_code,200)
+        with TestClient(app) as second:
+            second.cookies.update(victim_cookies)
+            self.assertEqual(second.get('/api/me').status_code,401)
+            payload={'email':'bea@lab.test','password':'Una-clave-ficticia-123'}
+            self.assertEqual(second.post('/api/login',json=payload,headers={'X-Vigia-Request':'1'}).status_code,401)
+            self.client.patch(path,json={'active':True},headers=self.h)
+            self.assertEqual(second.post('/api/login',json=payload,headers={'X-Vigia-Request':'1'}).status_code,200)
+            self.assertEqual(second.get('/api/domains').json()[0]['id'],domain)
+            self.assertEqual(self.client.post(path+'/revoke',json={},headers=self.h).status_code,200)
+            self.assertEqual(second.get('/api/me').status_code,401)
+
+    def test_public_registration_cannot_set_admin_role(self):
+        r=self.client.post('/api/register',json={'name':'Mallory','email':'m@lab.test','password':'Una-clave-ficticia-123','role':'admin'},headers=self.h)
+        self.assertEqual(r.status_code,422)
+        self.account()
+        self.assertEqual(self.client.get('/api/me').json()['role'],'user')
+
+    def test_migration_promotes_only_reserved_admin(self):
+        import sqlite3
+        from app.main import migrate_accounts
+        with sqlite3.connect(':memory:') as con:
+            con.row_factory=sqlite3.Row
+            con.executescript("CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT); INSERT INTO users VALUES(1,'admin'),(2,'Ana');")
+            migrate_accounts(con)
+            self.assertEqual([r['role'] for r in con.execute('SELECT role FROM users ORDER BY id')],['admin','user'])
+            con.execute("UPDATE users SET role='user' WHERE id=1")
+            migrate_accounts(con)
+            self.assertEqual(con.execute('SELECT role FROM users WHERE id=1').fetchone()[0],'user')
+
+    def test_demo_selection_removal_and_reload(self):
+        self.account(); domain=self.domain(); own=self.incident(domain)
+        r=self.client.post('/api/demo',json={'case_ids':[1,4]},headers=self.h)
+        self.assertEqual(r.json()['added'],2)
+        data=self.client.get('/api/demo').json()
+        self.assertEqual(len(data['loaded']),2)
+        self.assertEqual(sum(c['loaded'] for c in data['catalog']),2)
+        ident=data['loaded'][0]['id']
+        self.client.post(f'/api/incidents/{ident}/notes',json={'body':'Mi nota en un ejemplo'},headers=self.h)
+        r=self.client.request('DELETE','/api/demo',json={'incident_ids':[ident]},headers=self.h)
+        self.assertEqual(r.status_code,200)
+        self.assertEqual(self.client.get(f'/api/incidents/{own}').status_code,200)
+        self.assertEqual(self.client.get(f'/api/incidents/{ident}').status_code,404)
+        with db() as con:self.assertEqual(con.execute('SELECT count(*) FROM notes WHERE incident_id=?',(ident,)).fetchone()[0],0)
+        self.assertEqual(len(self.client.get('/api/domains').json()),1)
+        self.assertEqual(self.client.post('/api/demo',json={'case_ids':[1,4]},headers=self.h).json()['added'],1)
+        self.assertEqual(len(self.client.get('/api/incidents').json()),3)
+
+    def test_demo_deletion_protects_personal_and_foreign_cases(self):
+        self.account(); own=self.incident(self.domain())
+        self.client.post('/api/demo',json={'case_ids':[1]},headers=self.h)
+        example=self.client.get('/api/demo').json()['loaded'][0]['id']
+        # Even a manually renamed title must not authorize deletion.
+        with db() as con:con.execute("UPDATE incidents SET title='[DEMO] Personal' WHERE id=?",(own,))
+        r=self.client.request('DELETE','/api/demo',json={'incident_ids':[example,own]},headers=self.h)
+        self.assertEqual(r.status_code,409)
+        self.assertEqual(self.client.get(f'/api/incidents/{example}').status_code,200)
+        self.assertEqual(self.client.request('DELETE','/api/demo',json={'incident_ids':[example]},headers={'X-Vigia-Request':'1'}).status_code,403)
+        self.account('bea@lab.test')
+        self.assertEqual(self.client.request('DELETE','/api/demo',json={'incident_ids':[example]},headers=self.h).status_code,404)
+        self.assertEqual(self.client.get('/api/demo').json()['loaded'],[])
+
+    def test_demo_selection_validation_and_exact_quotas(self):
+        from unittest.mock import patch
+        self.account();self.domain()
+        for ids in [[],[0],[7],[1,1]]:
+            self.assertEqual(self.client.post('/api/demo',json={'case_ids':ids},headers=self.h).status_code,422)
+        with patch.dict('app.main.LIMITS',domains=1,incidents=1):
+            self.assertEqual(self.client.post('/api/demo',json={'case_ids':[1]},headers=self.h).json()['added'],1)
+            self.assertEqual(self.client.post('/api/demo',json={'case_ids':[1]},headers=self.h).json()['added'],0)
+            self.assertEqual(self.client.post('/api/demo',json={'case_ids':[2]},headers=self.h).status_code,409)
+        self.assertEqual(len(self.client.get('/api/domains').json()),1)
 
 if __name__=='__main__': unittest.main()

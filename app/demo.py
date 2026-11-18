@@ -20,14 +20,16 @@ CASES = [
   ['Pendiente: comprobar health, estado del contenedor y registros. No se ha realizado ningún escaneo.'])
 ]
 
-def seed_demo(con, user_id):
-    if con.execute('SELECT 1 FROM demo_loaded WHERE user_id=?',(user_id,)).fetchone(): return 0
-    for domain,title,category,priority,status,description,notes in CASES:
+def seed_demo(con, user_id, case_ids):
+    added=0
+    for key in case_ids:
+        if con.execute('SELECT 1 FROM incidents WHERE user_id=? AND demo_key=?',(user_id,key)).fetchone(): continue
+        domain,title,category,priority,status,description,notes=CASES[key-1]
         con.execute('INSERT OR IGNORE INTO domains(user_id,name) VALUES(?,?)',(user_id,domain))
         did=con.execute('SELECT id FROM domains WHERE user_id=? AND name=?',(user_id,domain)).fetchone()['id']
-        iid=con.execute('INSERT INTO incidents(user_id,domain_id,title,description,category,priority,status) VALUES(?,?,?,?,?,?,?)',
-            (user_id,did,'[DEMO] '+title,'CASO FICTICIO · No es evidencia real.\n\n'+description,category,priority,status)).lastrowid
+        iid=con.execute('INSERT INTO incidents(user_id,domain_id,title,description,category,priority,status,creation_source,demo_key) VALUES(?,?,?,?,?,?,?,?,?)',
+            (user_id,did,'[DEMO] '+title,'CASO FICTICIO · No es evidencia real.\n\n'+description,category,priority,status,'demo',key)).lastrowid
         for body in notes:
-            con.execute('INSERT INTO notes(incident_id,body) VALUES(?,?)',(iid,'[SIMULACIÓN] '+body))
-    con.execute('INSERT INTO demo_loaded VALUES(?)',(user_id,))
-    return len(CASES)
+            con.execute("INSERT INTO notes(incident_id,body,source) VALUES(?,?,'demo')",(iid,'[SIMULACIÓN] '+body))
+        added+=1
+    return added

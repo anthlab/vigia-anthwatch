@@ -1,8 +1,11 @@
 /tmp/vigia-runtime-v3/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
   from starlette.testclient import TestClient as TestClient  # noqa
+test_attribution_cannot_be_forged_and_updates (test_app.VigiaTests.test_attribution_cannot_be_forged_and_updates) ... ok
+test_attribution_migration_preserves_unknown_history (test_app.VigiaTests.test_attribution_migration_preserves_unknown_history) ... ok
 test_closed_registration_and_quotas (test_app.VigiaTests.test_closed_registration_and_quotas) ... ok
 test_cross_user_isolation (test_app.VigiaTests.test_cross_user_isolation) ... ok
 test_csrf_and_unauthenticated (test_app.VigiaTests.test_csrf_and_unauthenticated) ... ok
+test_demo_attribution_is_system (test_app.VigiaTests.test_demo_attribution_is_system) ... ok
 test_demo_idempotent_and_owned (test_app.VigiaTests.test_demo_idempotent_and_owned) ... ok
 test_error_response_does_not_leak (test_app.VigiaTests.test_error_response_does_not_leak) ... ok
 test_host_origin_and_body_size (test_app.VigiaTests.test_host_origin_and_body_size) ... ok
@@ -25,6 +28,6 @@ test_launcher_creates_persistent_private_env (test_operations.OperationsTests.te
 test_stream_body_limit_and_timeout (test_operations.OperationsTests.test_stream_body_limit_and_timeout) ... ok
 
 ----------------------------------------------------------------------
-Ran 23 tests in 15.969s
+Ran 26 tests in 20.551s
 
 OK

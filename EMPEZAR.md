@@ -33,3 +33,7 @@ Si ves 429, espera el tiempo indicado. La sesión caduca tras 15 minutos sin pet
 Para parar: Ctrl+C. Para volver: activa .venv y ejecuta python iniciar.py. Para editar con recarga usa --dev. No reinstales dependencias en cada arranque.
 
 El informe de seguridad está en docs/SEGURIDAD.md y los resultados de pruebas en docs/evidencias. Docker y Wazuh se prueban después en el laboratorio; estos ejemplos no sustituyen las evidencias de la sesión 1.
+
+Desde v7, las cuentas nuevas empiezan vacías. Puedes cargar los seis ejemplos desde Mi panel. Admin entra directamente en Administración. No se eliminan los datos de cuentas anteriores.
+
+El botón Cargar casos de ejemplo abre ahora un selector. Marca los casos deseados; en la sección inferior puedes seleccionar y eliminar los ejemplos propios con confirmación. Los dominios se conservan.

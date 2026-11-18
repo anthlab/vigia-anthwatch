@@ -55,4 +55,20 @@
     <if_sid>110500</if_sid><field name="event">^internal_error$</field>
     <description>Vigia: error interno de aplicacion; no confirma un ataque</description>
   </rule>
+  <rule id="110512" level="5">
+    <if_sid>110500</if_sid><field name="event">^admin_access_denied$</field>
+    <description>Vigia: acceso a administracion denegado</description>
+  </rule>
+  <rule id="110513" level="5">
+    <if_sid>110500</if_sid><field name="event">^admin_account_access$</field>
+    <description>Vigia: administrador cambia acceso de una cuenta</description>
+  </rule>
+  <rule id="110514" level="4">
+    <if_sid>110500</if_sid><field name="event">^admin_sessions_revoked$</field>
+    <description>Vigia: administrador revoca sesiones</description>
+  </rule>
+  <rule id="110515" level="3">
+    <if_sid>110500</if_sid><field name="event">^admin_incident_viewed$</field>
+    <description>Vigia: administrador consulta una incidencia</description>
+  </rule>
 </group>

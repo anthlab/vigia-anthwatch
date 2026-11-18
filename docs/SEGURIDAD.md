@@ -1,3 +1,7 @@
+> V6 incorpora administración global autorizada. El aislamiento descrito abajo se aplica a usuarios normales; consulta ADMINISTRACION.md y VERIFICACION.md para el comportamiento actual.
+
+> Informe histórico de v3. Para el comportamiento vigente consulta CAMBIOS_V5.md y VERIFICACION.md. En v5 el registro avisa explícitamente de duplicados; la protección contra enumeración descrita en la tabla de v3 ya no se aplica. El informe Bandit adjunto es histórico de v3.
+
 # Informe de seguridad · Vigía v3
 
 Fecha: 17 de noviembre de 2026. Ámbito: código de Vigía, lanzador, configuración propuesta de Docker y pruebas automatizadas. Autoría: implementación y revisión asistida; no constituye auditoría independiente ni certificación.
@@ -77,7 +81,7 @@ pip-audit examinó las 13 versiones fijadas con --disable-pip --no-deps: se usa 
 
 ## 6. Evidencias disponibles
 
-- evidencias/pruebas.txt: ejecución real de 23 pruebas; resultado OK.
+- evidencias/pruebas.txt: actualizado en v4 a 26 pruebas; resultado OK.
 - evidencias/dependencias.json: salida real de pip-audit, cero vulnerabilidades conocidas en las versiones consultadas.
 - evidencias/bandit.json: salida real del análisis estático y avisos pendientes de contexto.
 - requirements.lock: versiones usadas en las pruebas limpias.

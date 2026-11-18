@@ -60,3 +60,5 @@ No uses la IP observada como prueba de identidad: el túnel SSH o NAT pueden alt
 - https://documentation.wazuh.com/current/user-manual/ruleset/
 
 V3 añade IDs 110506–110511 para límites, origen, cambio de contraseña, rechazo de cambio, revocación y error interno. Comprobar también estos IDs antes de instalar. Las reglas están preparadas, no validadas aún con el motor de tu Wazuh.
+
+V6 añade IDs 110512–110515 para acceso administrativo denegado, cambios de acceso, revocación de sesiones y consulta administrativa de incidencias. Comprueba colisiones antes de instalar y valida con wazuh-logtest. Los eventos identifican al administrador en user_id y, para gestión de cuentas, al afectado en target_user_id. Estas reglas solo tienen comprobación de sintaxis XML aquí.

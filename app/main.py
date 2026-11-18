@@ -9,6 +9,7 @@ import re
 import secrets
 import sqlite3
 import time
+import unicodedata
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -20,13 +21,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from app.demo import seed_demo
+from app.demo import seed_demo, CASES
 from app.security import password_hash, verify_password, valid_new_password, protect_response
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).parent
-DATA = Path(os.getenv('DATA_DIR', 'data'))
-LOGS = Path(os.getenv('LOG_DIR', 'logs'))
+DATA = Path(os.getenv('DATA_DIR', str(ROOT.parent / 'data')))
+LOGS = Path(os.getenv('LOG_DIR', str(ROOT.parent / 'logs')))
 SECRET = os.getenv('SESSION_SECRET', '')
 SECURE = os.getenv('COOKIE_SECURE', 'false').lower() == 'true'
 COOKIE_NAME = '__Host-vigia_session' if SECURE else 'vigia_session'
@@ -56,6 +57,71 @@ def event(request, name, user_id=None, **fields):
 def digest(value):
     return hmac.new(SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
 
+def migrate_attribution(con):
+    """Add nullable attribution without inventing missing historical authors."""
+    columns={r['name'] for r in con.execute('PRAGMA table_info(incidents)')}
+    if 'created_by' not in columns:
+        con.execute('ALTER TABLE incidents ADD COLUMN created_by INTEGER REFERENCES users(id)')
+        con.execute("ALTER TABLE incidents ADD COLUMN creation_source TEXT NOT NULL DEFAULT 'legacy'")
+        con.execute('ALTER TABLE incidents ADD COLUMN updated_by INTEGER REFERENCES users(id)')
+        con.execute('ALTER TABLE incidents ADD COLUMN updated_at TEXT')
+    if 'author_id' not in {r['name'] for r in con.execute('PRAGMA table_info(notes)')}:
+        con.execute('ALTER TABLE notes ADD COLUMN author_id INTEGER REFERENCES users(id)')
+        con.execute("ALTER TABLE notes ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy'")
+
+def username_key(name):
+    return unicodedata.normalize('NFKC',name).strip().casefold()
+
+def migrate_accounts(con):
+    columns={r['name'] for r in con.execute('PRAGMA table_info(users)')}
+    if 'name_key' not in columns:
+        con.execute('ALTER TABLE users ADD COLUMN name_key TEXT')
+    if 'welcome_seen' not in columns:
+        con.execute('ALTER TABLE users ADD COLUMN welcome_seen INTEGER NOT NULL DEFAULT 0')
+    if 'role' not in columns:
+        con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    if 'active' not in columns:
+        con.execute('ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1')
+    # Preserve IDs and owned data. Resolve legacy duplicate display names explicitly.
+    used=set()
+    for row in con.execute('SELECT id,name FROM users ORDER BY id').fetchall():
+        name=row['name'].strip()
+        key=username_key(name)
+        if key in used:
+            base=name[:40]
+            name=base+' #'+str(row['id'])
+            while username_key(name) in used: name+='x'
+            key=username_key(name)
+        used.add(key)
+        con.execute('UPDATE users SET name=?,name_key=? WHERE id=?',(name,key,row['id']))
+    con.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_unique_name ON users(name_key)')
+    if 'role' not in columns:
+        con.execute("UPDATE users SET role='admin' WHERE name_key='admin'")
+
+def bootstrap_admin(con):
+    """Initial administrator with a unique local password."""
+    con.execute('CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+    if con.execute("SELECT 1 FROM app_settings WHERE key='admin_initialized'").fetchone(): return
+    if con.execute("SELECT 1 FROM users WHERE name_key='admin'").fetchone():
+        con.execute("INSERT INTO app_settings VALUES('admin_initialized','1')")
+        return
+    if con.execute("SELECT 1 FROM users WHERE email='admin@vigia.test'").fetchone():
+        raise RuntimeError('El correo admin@vigia.test ya pertenece a otra cuenta. No se sobrescribe.')
+    credential=DATA/'admin-inicial.txt'
+    password=secrets.token_urlsafe(24)
+    # Exclusive creation avoids following symlinks or overwriting an existing secret.
+    with open(credential,'x',opener=lambda path,flags: os.open(path,flags,0o600)) as f:
+        f.write('Usuario: admin\nCorreo: admin@vigia.test\nContraseña: '+password+'\nCambia la contraseña desde Seguridad de la cuenta y elimina este archivo.\n')
+    uid=con.execute("INSERT INTO users(name,email,password,name_key,role) VALUES('admin','admin@vigia.test',?,'admin','admin')",(password_hash(password),)).lastrowid
+    con.execute("INSERT INTO app_settings VALUES('admin_initialized','1')")
+    print('Cuenta admin creada. Credenciales iniciales en data/admin-inicial.txt (privado).',flush=True)
+
+INCIDENT_SELECT = '''SELECT i.*,d.name AS domain,c.name AS created_by_name,
+    e.name AS updated_by_name FROM incidents i
+    JOIN domains d ON d.id=i.domain_id
+    LEFT JOIN users c ON c.id=i.created_by
+    LEFT JOIN users e ON e.id=i.updated_by'''
+
 @asynccontextmanager
 async def lifespan(app):
     global DUMMY_HASH
@@ -80,6 +146,12 @@ async def lifespan(app):
         CREATE TABLE IF NOT EXISTS limits(key TEXT PRIMARY KEY, count INTEGER NOT NULL, until REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS demo_loaded(user_id INTEGER PRIMARY KEY REFERENCES users(id));
         ''')
+        migrate_attribution(con)
+        if 'demo_key' not in {r['name'] for r in con.execute('PRAGMA table_info(incidents)')}:
+            con.execute('ALTER TABLE incidents ADD COLUMN demo_key INTEGER')
+            for key,case in enumerate(CASES,1):
+                con.execute("UPDATE incidents SET demo_key=? WHERE creation_source='demo' AND title=?",(key,'[DEMO] '+case[1]))
+        migrate_accounts(con)
         if 'last_seen' not in [r['name'] for r in con.execute('PRAGMA table_info(sessions)')]:
             con.execute('ALTER TABLE sessions ADD COLUMN last_seen REAL NOT NULL DEFAULT 0')
             con.execute('UPDATE sessions SET last_seen=?', (time.time(),))
@@ -90,6 +162,7 @@ async def lifespan(app):
         CREATE INDEX IF NOT EXISTS sessions_owner ON sessions(user_id);
         CREATE INDEX IF NOT EXISTS limits_expiry ON limits(until);
         ''')
+        bootstrap_admin(con)
         con.execute('DELETE FROM sessions WHERE expires<=? OR last_seen<=?',(time.time(),time.time()-900))
     yield
     logger.removeHandler(handler)
@@ -188,7 +261,7 @@ async def invalid(request, exc):
 
 def auth(request, write=False):
     with db() as con:
-        row = con.execute('SELECT s.*, u.name, u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE token=? AND expires>? AND last_seen>?', (digest(request.cookies.get(COOKIE_NAME,'')), time.time(),time.time()-900)).fetchone()
+        row = con.execute('SELECT s.*, u.name, u.email, u.welcome_seen, u.role, u.active FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.active=1 AND token=? AND expires>? AND last_seen>?', (digest(request.cookies.get(COOKIE_NAME,'')), time.time(),time.time()-900)).fetchone()
     if not row:
         event(request, 'auth_required')
         raise HTTPException(401, 'Inicia sesión para continuar.')
@@ -313,16 +386,17 @@ def register(payload: Registration, request: Request):
     if not REGISTRATION_OPEN: raise HTTPException(403,'El registro de cuentas está cerrado.')
     throttle(request,payload.email,'register')
     hashed=password_hash(payload.password)
-    uid=None
     with db() as con:
         con.execute('BEGIN IMMEDIATE')
-        if not con.execute('SELECT 1 FROM users WHERE email=?',(payload.email,)).fetchone():
-            quota(con,'users')
-            uid=con.execute('INSERT INTO users(name,email,password) VALUES(?,?,?)',(payload.name,payload.email,hashed)).lastrowid
-            seed_demo(con,uid)
-    event(request, 'register_processed', uid)
-    # Misma respuesta y coste de hash para cuentas nuevas y existentes.
-    return {'message':'Solicitud procesada. Si los datos eran nuevos, ya puedes iniciar sesión.'}
+        if con.execute('SELECT 1 FROM users WHERE email=?',(payload.email,)).fetchone():
+            raise HTTPException(409,'Ese correo ya está registrado. Usa otro o inicia sesión.')
+        key=username_key(payload.name)
+        if con.execute('SELECT 1 FROM users WHERE name_key=?',(key,)).fetchone():
+            raise HTTPException(409,'Ese nombre de usuario ya está registrado. Elige otro.')
+        quota(con,'users')
+        uid=con.execute('INSERT INTO users(name,email,password,name_key) VALUES(?,?,?,?)',(payload.name,payload.email,hashed,key)).lastrowid
+        event(request, 'register_processed', uid)
+    return {'message':'Cuenta creada. Ya puedes iniciar sesión.'}
 
 @app.post('/api/login')
 def login(payload: Credentials, request: Request, response: Response):
@@ -331,15 +405,15 @@ def login(payload: Credentials, request: Request, response: Response):
         row=con.execute('SELECT * FROM users WHERE email=?',(payload.email,)).fetchone()
     saved=row['password'] if row else DUMMY_HASH
     valid,legacy=verify_password(payload.password,saved)
-    if not row or not valid:
+    if not row or not valid or not row['active']:
         event(request,'login_failed')
         raise HTTPException(401,'Correo o contraseña incorrectos.')
     upgraded=password_hash(payload.password) if legacy else saved
     token,csrf=secrets.token_urlsafe(32),secrets.token_urlsafe(32)
     with db() as con:
         con.execute('BEGIN IMMEDIATE')
-        fresh=con.execute('SELECT password FROM users WHERE id=?',(row['id'],)).fetchone()
-        if not fresh or fresh['password']!=saved:
+        fresh=con.execute('SELECT password,active FROM users WHERE id=?',(row['id'],)).fetchone()
+        if not fresh or not fresh['active'] or fresh['password']!=saved:
             raise HTTPException(401,'Vuelve a iniciar sesión.')
         if legacy:
             con.execute('UPDATE users SET password=? WHERE id=?',(upgraded,row['id']))
@@ -348,7 +422,7 @@ def login(payload: Credentials, request: Request, response: Response):
         con.execute('INSERT INTO sessions(token,user_id,csrf,expires,last_seen) VALUES(?,?,?,?,?)',(digest(token),row['id'],csrf,time.time()+3600,time.time()))
     response.set_cookie(COOKIE_NAME,token,httponly=True,secure=SECURE,samesite='strict',max_age=3600,path='/')
     event(request,'login_ok',row['id'])
-    return {'name':row['name'],'csrf':csrf}
+    return {'name':row['name'],'csrf':csrf,'welcome_seen':bool(row['welcome_seen']),'role':row['role'],'id':row['id']}
 
 @app.post('/api/password')
 def change_password(payload: PasswordChange,request: Request,response: Response):
@@ -381,7 +455,14 @@ def logout_all(request: Request,response: Response):
 @app.get('/api/me')
 def me(request: Request):
     user = auth(request)
-    return {'name': user['name'], 'csrf': user['csrf']}
+    return {'name': user['name'], 'csrf': user['csrf'], 'welcome_seen':bool(user['welcome_seen']),'role':user['role'],'id':user['user_id']}
+
+@app.post('/api/welcome-seen')
+def welcome_seen(request: Request):
+    user=auth(request,True)
+    with db() as con:
+        con.execute('UPDATE users SET welcome_seen=1 WHERE id=?',(user['user_id'],))
+    return {'ok':True}
 
 @app.post('/api/logout')
 def logout(request: Request, response: Response):
@@ -411,7 +492,7 @@ def add_domain(payload: Domain, request: Request):
 @app.get('/api/incidents')
 def incidents(request: Request):
     user = auth(request)
-    with db() as con: return [dict(r) for r in con.execute('SELECT i.*,d.name AS domain FROM incidents i JOIN domains d ON d.id=i.domain_id WHERE i.user_id=? ORDER BY i.id DESC', (user['user_id'],))]
+    with db() as con: return [dict(r) for r in con.execute(INCIDENT_SELECT+' WHERE i.user_id=? ORDER BY i.id DESC', (user['user_id'],))]
 
 @app.post('/api/incidents', status_code=201)
 def add_incident(payload: Incident, request: Request):
@@ -420,7 +501,7 @@ def add_incident(payload: Incident, request: Request):
         con.execute('BEGIN IMMEDIATE')
         owned(con,'domains',payload.domain_id,user['user_id'],request)
         quota(con,'incidents',user['user_id'])
-        ident = con.execute('INSERT INTO incidents(user_id,domain_id,title,description,category,priority) VALUES(?,?,?,?,?,?)', (user['user_id'],payload.domain_id,payload.title,payload.description,payload.category,payload.priority)).lastrowid
+        ident = con.execute('INSERT INTO incidents(user_id,domain_id,title,description,category,priority,created_by,creation_source) VALUES(?,?,?,?,?,?,?,?)', (user['user_id'],payload.domain_id,payload.title,payload.description,payload.category,payload.priority,user['user_id'],'user')).lastrowid
     event(request,'incident_created',user['user_id'],resource_id=ident)
     return {'id':ident}
 
@@ -428,8 +509,9 @@ def add_incident(payload: Incident, request: Request):
 def detail(ident: int, request: Request):
     user = auth(request)
     with db() as con:
-        result = owned(con,'incidents',ident,user['user_id'],request)
-        result['notes'] = [dict(r) for r in con.execute('SELECT * FROM notes WHERE incident_id=? ORDER BY id', (ident,))]
+        owned(con,'incidents',ident,user['user_id'],request)
+        result = dict(con.execute(INCIDENT_SELECT+' WHERE i.id=? AND i.user_id=?',(ident,user['user_id'])).fetchone())
+        result['notes'] = [dict(r) for r in con.execute('SELECT n.*,u.name AS author_name FROM notes n LEFT JOIN users u ON u.id=n.author_id WHERE n.incident_id=? ORDER BY n.id', (ident,))]
         return result
 
 @app.patch('/api/incidents/{ident}')
@@ -437,7 +519,7 @@ def update(ident: int, payload: Update, request: Request):
     user = auth(request, True)
     with db() as con:
         owned(con,'incidents',ident,user['user_id'],request)
-        con.execute('UPDATE incidents SET status=? WHERE id=?', (payload.status,ident))
+        con.execute('UPDATE incidents SET status=?,updated_by=?,updated_at=? WHERE id=?', (payload.status,user['user_id'],datetime.now(timezone.utc).isoformat(),ident))
     event(request,'incident_updated',user['user_id'],resource_id=ident,status=payload.status)
     return {'ok':True}
 
@@ -448,21 +530,136 @@ def note(ident: int, payload: Note, request: Request):
         con.execute('BEGIN IMMEDIATE')
         owned(con,'incidents',ident,user['user_id'],request)
         quota(con,'notes',ident)
-        con.execute('INSERT INTO notes(incident_id,body) VALUES(?,?)', (ident,payload.body))
+        con.execute("INSERT INTO notes(incident_id,body,author_id,source) VALUES(?,?,?,'user')", (ident,payload.body,user['user_id']))
+        con.execute('UPDATE incidents SET updated_by=?,updated_at=? WHERE id=?',(user['user_id'],datetime.now(timezone.utc).isoformat(),ident))
     event(request,'note_created',user['user_id'],resource_id=ident)
     return {'ok':True}
 
+class DemoSelection(InputModel):
+    case_ids: list[int] = Field(min_length=1,max_length=6)
+    @field_validator('case_ids')
+    @classmethod
+    def valid_cases(cls,values):
+        if len(set(values))!=len(values) or any(v<1 or v>len(CASES) for v in values):
+            raise ValueError('Selección no válida')
+        return values
+
+class DemoRemoval(InputModel):
+    incident_ids: list[int] = Field(min_length=1,max_length=200)
+    @field_validator('incident_ids')
+    @classmethod
+    def valid_ids(cls,values):
+        if len(set(values))!=len(values) or any(v<1 for v in values): raise ValueError('Selección no válida')
+        return values
+
+@app.get('/api/demo')
+def demo_catalog(request: Request):
+    user=auth(request)
+    with db() as con:
+        loaded=[dict(r) for r in con.execute("SELECT id,title,demo_key FROM incidents WHERE user_id=? AND creation_source='demo' ORDER BY id",(user['user_id'],))]
+    return {'catalog':[{'id':key,'title':case[1],'domain':case[0],'priority':case[3],'loaded':any(r['demo_key']==key for r in loaded)} for key,case in enumerate(CASES,1)],'loaded':loaded}
+
 @app.post('/api/demo')
-def demo(request: Request):
+def demo(payload: DemoSelection,request: Request):
     user=auth(request,True)
     with db() as con:
         con.execute('BEGIN IMMEDIATE')
-        if not con.execute('SELECT 1 FROM demo_loaded WHERE user_id=?',(user['user_id'],)).fetchone():
-            quota(con,'domains',user['user_id'],3)
-            quota(con,'incidents',user['user_id'],6)
-        added=seed_demo(con,user['user_id'])
+        keys=[key for key in payload.case_ids if not con.execute('SELECT 1 FROM incidents WHERE user_id=? AND demo_key=?',(user['user_id'],key)).fetchone()]
+        missing={CASES[key-1][0] for key in keys if not con.execute('SELECT 1 FROM domains WHERE user_id=? AND name=?',(user['user_id'],CASES[key-1][0])).fetchone()}
+        quota(con,'domains',user['user_id'],len(missing))
+        quota(con,'incidents',user['user_id'],len(keys))
+        added=seed_demo(con,user['user_id'],keys)
     event(request,'demo_loaded',user['user_id'],simulated=True,added=added)
-    return {'added':added,'message':'Casos de ejemplo cargados.' if added else 'Tu cuenta ya tiene los casos de ejemplo.'}
+    return {'added':added,'message':f'{added} casos de ejemplo cargados.' if added else 'Los ejemplos seleccionados ya estaban cargados.'}
+
+@app.delete('/api/demo')
+def remove_demo(payload: DemoRemoval,request: Request):
+    user=auth(request,True)
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        for ident in payload.incident_ids:
+            row=owned(con,'incidents',ident,user['user_id'],request)
+            if row['creation_source']!='demo': raise HTTPException(409,'Solo se pueden eliminar ejemplos identificados por el sistema.')
+        for ident in payload.incident_ids:
+            con.execute('DELETE FROM notes WHERE incident_id=?',(ident,))
+            con.execute('DELETE FROM incidents WHERE id=? AND user_id=?',(ident,user['user_id']))
+    event(request,'demo_removed',user['user_id'],simulated=True,removed=len(payload.incident_ids))
+    return {'removed':len(payload.incident_ids),'message':'Ejemplos eliminados. Los dominios se conservan.'}
+
+def require_admin(request,write=False):
+    user=auth(request,write)
+    if user['role']!='admin':
+        event(request,'admin_access_denied',user['user_id'])
+        raise HTTPException(403,'Se requiere una cuenta administradora.')
+    return user
+
+class AccountAccess(InputModel):
+    active: bool
+
+@app.get('/api/admin/summary')
+def admin_summary(request: Request):
+    require_admin(request)
+    with db() as con:
+        return {'users':con.execute('SELECT count(*) FROM users').fetchone()[0],
+                'active':con.execute('SELECT count(*) FROM users WHERE active=1').fetchone()[0],
+                'domains':con.execute('SELECT count(*) FROM domains').fetchone()[0],
+                'incidents':con.execute('SELECT count(*) FROM incidents').fetchone()[0]}
+
+@app.get('/api/admin/users')
+def admin_users(request: Request):
+    require_admin(request)
+    with db() as con:
+        return [dict(r) for r in con.execute('''SELECT u.id,u.name,u.email,u.role,u.active,
+            (SELECT count(*) FROM domains d WHERE d.user_id=u.id) AS domains,
+            (SELECT count(*) FROM incidents i WHERE i.user_id=u.id) AS incidents
+            FROM users u ORDER BY u.id''')]
+
+@app.patch('/api/admin/users/{ident}')
+def admin_access(ident: int,payload: AccountAccess,request: Request):
+    user=require_admin(request,True)
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        target=con.execute('SELECT role FROM users WHERE id=?',(ident,)).fetchone()
+        if not target: raise HTTPException(404,'Cuenta no disponible.')
+        if ident==user['user_id'] or target['role']=='admin':
+            raise HTTPException(409,'No puedes desactivar cuentas administradoras desde este panel.')
+        con.execute('UPDATE users SET active=? WHERE id=?',(int(payload.active),ident))
+        if not payload.active: con.execute('DELETE FROM sessions WHERE user_id=?',(ident,))
+    event(request,'admin_account_access',user['user_id'],target_user_id=ident,active=payload.active)
+    return {'ok':True}
+
+@app.post('/api/admin/users/{ident}/revoke')
+def admin_revoke(ident: int,request: Request):
+    user=require_admin(request,True)
+    with db() as con:
+        target=con.execute('SELECT role FROM users WHERE id=?',(ident,)).fetchone()
+        if not target: raise HTTPException(404,'Cuenta no disponible.')
+        if target['role']=='admin': raise HTTPException(409,'Usa Seguridad de la cuenta para cerrar tus sesiones.')
+        con.execute('DELETE FROM sessions WHERE user_id=?',(ident,))
+    event(request,'admin_sessions_revoked',user['user_id'],target_user_id=ident)
+    return {'ok':True}
+
+@app.get('/api/admin/incidents')
+def admin_incidents(request: Request,offset: int=0):
+    require_admin(request)
+    if offset<0 or offset>10000: raise HTTPException(422,'Página no válida.')
+    with db() as con:
+        rows=[dict(r) for r in con.execute(INCIDENT_SELECT+''' ORDER BY i.id DESC LIMIT 50 OFFSET ?''',(offset,))]
+        owners={r['id']:r['name'] for r in con.execute('SELECT id,name FROM users')}
+        for row in rows: row['owner_name']=owners[row['user_id']]
+        return {'items':rows,'total':con.execute('SELECT count(*) FROM incidents').fetchone()[0]}
+
+@app.get('/api/admin/incidents/{ident}')
+def admin_detail(ident: int,request: Request):
+    user=require_admin(request)
+    with db() as con:
+        row=con.execute(INCIDENT_SELECT+' WHERE i.id=?',(ident,)).fetchone()
+        if not row: raise HTTPException(404,'Incidencia no disponible.')
+        result=dict(row)
+        result['owner_name']=con.execute('SELECT name FROM users WHERE id=?',(row['user_id'],)).fetchone()[0]
+        result['notes']=[dict(r) for r in con.execute('SELECT n.*,u.name AS author_name FROM notes n LEFT JOIN users u ON u.id=n.author_id WHERE n.incident_id=? ORDER BY n.id',(ident,))]
+    event(request,'admin_incident_viewed',user['user_id'],resource_id=ident)
+    return result
 
 app.mount('/static', StaticFiles(directory=ROOT / 'static'), name='static')
 @app.get('/')
